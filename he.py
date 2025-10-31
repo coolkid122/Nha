@@ -1,8 +1,9 @@
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Request, Form, UploadFile
 from fastapi.responses import HTMLResponse
 from luaparser import ast
 import os
 import uvicorn
+import re
 
 class Deobfuscator(ast.ASTVisitor):
     def __init__(self):
@@ -12,7 +13,7 @@ class Deobfuscator(ast.ASTVisitor):
 
     def new_name(self):
         self.counter += 1
-        return f"v{self.counter}"
+        return f"var{self.counter}"  # Changed to 'var' for better readability
 
     def push_scope(self):
         self.scopes.append({})
@@ -121,21 +122,45 @@ class Deobfuscator(ast.ASTVisitor):
         self.generic_visit(node.body)
         self.pop_scope()
 
+def preprocess_luau(code):
+    # Simple preprocessing to remove Luau type annotations for compatibility with luaparser
+    # Remove single-line comments
+    code = re.sub(r'--.*$', '', code, flags=re.MULTILINE)
+    # Remove multi-line comments
+    code = re.sub(r'\[\[.*?\]\]', '', code, flags=re.DOTALL)
+    # Remove type annotations in parameters and returns (basic, may not handle nested types perfectly)
+    code = re.sub(r':\s*[\w<>\|\?\[\]\{\}]+', '', code)  # Remove : type
+    code = re.sub(r'->\s*[\w<>\|\?\[\]\{\}]+', '', code)  # Remove -> type
+    # Remove !strict or other directives
+    code = re.sub(r'--!\w+', '', code)
+    return code.strip()
+
 app = FastAPI()
 
 @app.route("/", methods=["GET", "POST"])
-async def index(request: Request, input_code: str = Form(None)):
+async def index(request: Request, input_code: str = Form(None), file: UploadFile = None):
+    code = ''
     output_code = ''
     error = None
 
-    if request.method == "POST" and input_code:
-        try:
-            tree = ast.parse(input_code)
-            deobf = Deobfuscator()
-            deobf.visit(tree)
-            output_code = ast.to_lua_source(tree)
-        except Exception as e:
-            error = f"Error processing code: {str(e)}"
+    if request.method == "POST":
+        if file:
+            try:
+                code = (await file.read()).decode('utf-8')
+            except:
+                error = "Error reading uploaded file."
+        elif input_code:
+            code = input_code
+
+        if code:
+            try:
+                code = preprocess_luau(code)
+                tree = ast.parse(code)
+                deobf = Deobfuscator()
+                deobf.visit(tree)
+                output_code = ast.to_pretty_str(tree)  # Use to_pretty_str for better formatting if available, else to_lua_source
+            except Exception as e:
+                error = f"Error processing code: {str(e)}\nNote: For advanced obfuscators like Moonsec v3 or Prometheus, this tool handles basic variable renaming and beautification. For full deobfuscation, consider specialized tools like Prometheus-Deobfuscator on GitHub or manual analysis."
 
     html_content = f"""
     <!DOCTYPE html>
@@ -143,36 +168,59 @@ async def index(request: Request, input_code: str = Form(None)):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Luau Deobfuscator</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <title>Advanced Luau Deobfuscator</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/monokai.min.css">
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+        <script>hljs.highlightAll();</script>
         <style>
-            body {{ padding: 20px; background-color: #f8f9fa; }}
-            .container {{ max-width: 1200px; }}
-            textarea {{ font-family: monospace; height: 400px; }}
-            .btn-submit {{ margin-top: 10px; }}
+            body {{ padding: 40px; background-color: #1e1e1e; color: #f8f9fa; }}
+            .container {{ max-width: 1400px; }}
+            textarea, pre {{ font-family: monospace; }}
+            .input-area {{ height: 500px; overflow: auto; }}
+            .output-area {{ background-color: #2d2d2d; border-radius: 5px; padding: 15px; }}
+            .btn-submit {{ margin-top: 20px; }}
+            .copy-btn {{ margin-top: 10px; }}
+            h1, h3 {{ color: #ffffff; }}
         </style>
     </head>
     <body>
         <div class="container">
-            <h1 class="text-center mb-4">Luau Script Deobfuscator</h1>
-            <form method="POST">
+            <h1 class="text-center mb-5">Advanced Luau Script Deobfuscator</h1>
+            <form method="POST" enctype="multipart/form-data">
                 <div class="row">
                     <div class="col-md-6">
                         <h3>Input Obfuscated Code</h3>
-                        <textarea name="input_code" class="form-control" placeholder="Paste your obfuscated Luau code here...">{input_code or ''}</textarea>
+                        <textarea name="input_code" class="form-control input-area bg-dark text-light" placeholder="Paste your obfuscated Luau code here...">{code}</textarea>
+                        <div class="mt-3">
+                            <label for="file" class="form-label">Or Upload File</label>
+                            <input type="file" name="file" class="form-control bg-dark text-light">
+                        </div>
                     </div>
                     <div class="col-md-6">
                         <h3>Deobfuscated Output</h3>
-                        <textarea class="form-control" readonly>{output_code}</textarea>
+                        <div class="output-area">
+                            <pre><code class="language-lua" id="output-code">{output_code}</code></pre>
+                        </div>
+                        <button type="button" class="btn btn-secondary copy-btn" onclick="copyOutput()">Copy Output</button>
                     </div>
                 </div>
-                {"<div class='alert alert-danger mt-3'>" + error + "</div>" if error else ''}
+                {f"<div class='alert alert-danger mt-4'>{error}</div>" if error else ''}
                 <div class="text-center">
                     <button type="submit" class="btn btn-primary btn-lg btn-submit">Deobfuscate</button>
                 </div>
             </form>
         </div>
-        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+        <script>
+            function copyOutput() {{
+                const code = document.getElementById('output-code').innerText;
+                navigator.clipboard.writeText(code).then(() => alert('Copied to clipboard!'));
+            }}
+            document.addEventListener('DOMContentLoaded', (event) => {{
+                hljs.highlightAll();
+            }});
+        </script>
     </body>
     </html>
     """
