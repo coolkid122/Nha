@@ -1,5 +1,8 @@
-from flask import Flask, render_template_string, request
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse
 from luaparser import ast
+import os
+import uvicorn
 
 class Deobfuscator(ast.ASTVisitor):
     def __init__(self):
@@ -118,26 +121,23 @@ class Deobfuscator(ast.ASTVisitor):
         self.generic_visit(node.body)
         self.pop_scope()
 
-app = Flask(__name__)
+app = FastAPI()
 
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    input_code = ''
+@app.route("/", methods=["GET", "POST"])
+async def index(request: Request, input_code: str = Form(None)):
     output_code = ''
     error = None
 
-    if request.method == 'POST':
-        input_code = request.form.get('input_code', '')
-        if input_code:
-            try:
-                tree = ast.parse(input_code)
-                deobf = Deobfuscator()
-                deobf.visit(tree)
-                output_code = ast.to_lua_source(tree)
-            except Exception as e:
-                error = f"Error processing code: {str(e)}"
+    if request.method == "POST" and input_code:
+        try:
+            tree = ast.parse(input_code)
+            deobf = Deobfuscator()
+            deobf.visit(tree)
+            output_code = ast.to_lua_source(tree)
+        except Exception as e:
+            error = f"Error processing code: {str(e)}"
 
-    html_content = """
+    html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -146,10 +146,10 @@ def index():
         <title>Luau Deobfuscator</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
         <style>
-            body { padding: 20px; background-color: #f8f9fa; }
-            .container { max-width: 1200px; }
-            textarea { font-family: monospace; height: 400px; }
-            .btn-submit { margin-top: 10px; }
+            body {{ padding: 20px; background-color: #f8f9fa; }}
+            .container {{ max-width: 1200px; }}
+            textarea {{ font-family: monospace; height: 400px; }}
+            .btn-submit {{ margin-top: 10px; }}
         </style>
     </head>
     <body>
@@ -159,16 +159,14 @@ def index():
                 <div class="row">
                     <div class="col-md-6">
                         <h3>Input Obfuscated Code</h3>
-                        <textarea name="input_code" class="form-control" placeholder="Paste your obfuscated Luau code here...">{{ input_code }}</textarea>
+                        <textarea name="input_code" class="form-control" placeholder="Paste your obfuscated Luau code here...">{input_code or ''}</textarea>
                     </div>
                     <div class="col-md-6">
                         <h3>Deobfuscated Output</h3>
-                        <textarea class="form-control" readonly>{{ output_code }}</textarea>
+                        <textarea class="form-control" readonly>{output_code}</textarea>
                     </div>
                 </div>
-                {% if error %}
-                    <div class="alert alert-danger mt-3">{{ error }}</div>
-                {% endif %}
+                {"<div class='alert alert-danger mt-3'>" + error + "</div>" if error else ''}
                 <div class="text-center">
                     <button type="submit" class="btn btn-primary btn-lg btn-submit">Deobfuscate</button>
                 </div>
@@ -179,7 +177,8 @@ def index():
     </html>
     """
 
-    return render_template_string(html_content, input_code=input_code, output_code=output_code, error=error)
+    return HTMLResponse(content=html_content)
 
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
